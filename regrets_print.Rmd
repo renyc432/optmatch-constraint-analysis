@@ -1,0 +1,127 @@
+---
+output:
+  word_document: default
+  html_document: default
+---
+
+```{r eval=FALSE}
+library(optmatch)
+library(tidyverse)
+library(bigmatch)
+library(effectsize)
+
+regrets  <- function(matchres, ISM)
+{
+  stopifnot(isTRUE(inherits(matchres, "optmatch")) || is(matchres, "MCFSolutions"))
+  if (inherits(matchres, "optmatch")) matchres  <- attr(matchres, "MCFSolutions")
+  if (is.null(matchres)) stop("No MCF info")
+  
+  # Discretization error
+  regret_origdist  <- matchres@subproblems$lagrangian_value -
+    matchres@subproblems$dual_value
+  
+  # Lagrangian value
+  lagrangeval  <- optmatch:::evaluate_lagrangian(ISM, matchres)
+  # Dual value
+  dualval  <- optmatch::evaluate_dual(ISM, matchres)
+  # Upper bound
+  regret_newdist  <-  (lagrangeval - dualval)
+  regret_diff = regret_newdist
+
+  # Set to 100% if upper bound too large
+  if (regret_diff > lagrangeval) {regret_diff=langraneval} 
+  
+  return (c(discretization=regret_origdist, newdist=regret_newdist,
+    diff=regret_diff)/lagrangeval)
+}
+```
+
+
+```{r eval=FALSE}
+library(tidyverse)
+library(bigmatch)
+library(optmatch)
+library(effectsize)
+
+# constraint: nc, c, cc
+# caliper: optional, default to 0
+# constant: optioanl, default to 0
+# data: must contain columns z and propens
+# covariates: a vector of covariate (string)
+
+
+bigmatch_cost = function(constraint, data, covariates, caliper=-1, constant=-1) {
+  
+  
+  # concatenate covariates
+  cov = paste(covariates,collapse="+")
+  cov = str_c("z~",cov)
+  
+  # If no constraint
+  if (constraint == "nc") {
+    dist.nc = match_on(as.formula(cov), data=data)
+    prm.nc = pairmatch(dist.nc, data=data)
+    prm.nc.dist = prm.nc %>% 
+      matched.distances(dist.nc) %>% 
+      sum()
+    return (prm.nc.dist)
+  }
+
+  # If caliper
+  if (constraint == "c") {
+    if (caliper < 0) {return ("No caliper supplied")}
+    pooledsd = sd_pooled(data$propens,as.factor(data$z))
+    caliper = caliper/pooledsd
+    
+    mhd = match_on(as.formula(cov), data = data) + caliper(match_on(z~propens, data=data), width=caliper)
+    
+    prm.c = pairmatch(mhd, data = data)
+    prm.c.dist = prm.c %>% 
+      matched.distances(mhd) %>% 
+      sum()
+    return (prm.c.dist)
+  }
+  
+  # If caliper+constant
+  if (constraint == "cc") {
+    if (caliper < 0) {return ("No caliper supplied")}
+    if (constant < 0) {return ("No constant supplied")}
+    index = 1
+    X= matrix()
+    while (index <= length(covariates)) {
+      if (index == 1) {X = cbind(data[[covariates[index]]])}
+      X = cbind(X,data[[covariates[index]]])
+      index = index + 1
+    }
+    
+    mDist = smahal(data$z, data$propens, caliper = caliper, constant = constant, X=X)
+
+    bigmatch.t = mDist$start
+    bigmatch.c = mDist$end
+  
+    dist.cc = match_on(as.formula(cov), caliper=400, data=data)
+    dist.optmatch = data.frame(cols = dist.cc@cols,rows = dist.cc@rows,dist = dist.cc@.Data)
+  
+    dist.temp = c()
+    index = 1
+    numT = nrow(filter(data, z==1))
+    while (index <= length(bigmatch.c)) {
+      value = filter(dist.optmatch, cols == bigmatch.c[index]-numT, rows == bigmatch.t[index])$dist
+      dist.temp = c(dist.temp, value)
+      index = index+1
+    }
+    
+    dist.cc@.Data = dist.temp
+    dist.cc@cols = as.integer(bigmatch.c - numT)
+    dist.cc@rows = as.integer(bigmatch.t)
+  
+    prm.cc = pairmatch(dist.cc, data=data)
+    prm.cc.dist = prm.cc %>% 
+      matched.distances(dist.cc) %>% 
+      sum()
+  return (prm.cc.dist)
+  }
+}
+```
+
+
